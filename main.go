@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -14,6 +15,11 @@ import (
 	"fyne.io/fyne/v2/container"
 	json "github.com/KevinWang15/go-json5"
 )
+
+// !!!!! This MUST match the app name given in the run configuration !!!!!
+const version = "1_1_0"
+
+// !!!!! This MUST match the app name given in the run configuration !!!!!
 
 type OccultationEvent struct {
 	FplaneImage                     *image.Gray // A square array of uint8 values
@@ -53,6 +59,9 @@ type OccultationEvent struct {
 }
 
 func main() {
+
+	programStart := time.Now()
+
 	// We supply an ID (hopefully unique) because we may need to use the preferences API
 	myApp := app.NewWithID("com.gmail.ok.anderson.intensityMatrix")
 	w := myApp.NewWindow("OccultDiffractionApp - user friendly diffraction image (8 bit grayscale png)")
@@ -94,11 +103,24 @@ func main() {
 		fmt.Println(string(data))
 	}
 
-	// Sanity check on number of points in fundamental plane
+	// Sanity check on number of points in a fundamental plane
 	if event.FundamentalPlaneWidthPoints < 10 {
 		fmt.Println(fmt.Errorf("\n\tThe fundamental plane width must be at least 10 points."))
 		os.Exit(15)
 	}
+
+	Npts := event.FundamentalPlaneWidthPoints
+
+	fmt.Printf("\nVersion %s\n\n", version)
+	// Calculate resolution in fundamental plane
+	resolution := event.FundamentalPlaneWidthKm / float64(Npts)
+	fmt.Printf("Resolution in fundamental plane is %0.3f km/pixel\n", resolution)
+	fresnelScale := FresnelScale(event.ObservationWavelengthNm, event.DistanceAu)
+	fmt.Printf("Fresnel scale is %0.3f km\n", fresnelScale)
+	samplesPerFresnelScale := int(fresnelScale / resolution)
+	fmt.Printf("Samples per Fresnel scale is %d  (To see diffraction effects, this number should be at least 5)\n\n", samplesPerFresnelScale)
+
+	start := time.Now() // Time generation of geometric shadow
 
 	// Deal with external image supplied by the user.
 	if event.PathToExternalImage != "" {
@@ -148,8 +170,11 @@ func main() {
 
 	sourcePlane := ConvertSourcePlaneImageToComplex(event.FplaneImage)
 
-	// If user gave us distance in arcseconds, it is given priority and
-	// we overwrite any value that may also have been given in au.
+	elapsed := time.Since(start)
+	fmt.Printf("Generation of the geometric shadow took %s\n", elapsed)
+
+	// If a user gave us distance in arcseconds, it is given priority, and
+	// we overwrite any value that may also have been given in AU.
 	if event.ParallaxArcsec > 0.0 {
 		event.DistanceAu = 8.79414 / event.ParallaxArcsec
 	}
@@ -160,7 +185,7 @@ func main() {
 	WavelengthKm := event.ObservationWavelengthNm * nmToKm
 	Lkm := event.FundamentalPlaneWidthKm
 	Zkm := event.DistanceAu * auToKm
-	Npts := event.FundamentalPlaneWidthPoints
+	//Npts := event.FundamentalPlaneWidthPoints
 
 	// Some elementary checks to make sure that the user has not supplied bad parameters
 	if Lkm <= 0.0 {
@@ -175,8 +200,12 @@ func main() {
 
 	event.StarDiamKm = 1.496e8 * event.DistanceAu * event.StarDiamMas / (1000.0 * 206265)
 
+	start = time.Now()
 	eField := FullObservationPlaneSincSolution(Lkm, Zkm, WavelengthKm, sourcePlane)
+	elapsed = time.Since(start)
+	fmt.Printf("Calculation of the observation e-field took %s\n", elapsed)
 
+	start = time.Now()
 	// incidentWave is used to convert the aperture image to an occulter image using Babinet's formula
 	incidentWave := complex(1.0, 0.0)
 
@@ -191,6 +220,8 @@ func main() {
 		fmt.Println(fmt.Errorf("reshape of intensity vector failed: %w", err))
 		os.Exit(10)
 	}
+	elapsed = time.Since(start)
+	fmt.Printf("Calculation of the observation intensity took %s\n", elapsed)
 
 	imgForDisplay, err := MatrixToGrayViewPercentile(intensityMatrix, 0.0, 100)
 	if err != nil {
@@ -215,13 +246,44 @@ func main() {
 		os.Exit(14)
 	}
 
-	// Calculate resolution in fundamental plane
-	resolution := event.FundamentalPlaneWidthKm / float64(Npts)
-	fmt.Printf("Resolution in fundamental plane is %0.2f km/pixel\n", resolution)
-	fresnelScale := FresnelScale(event.ObservationWavelengthNm, event.DistanceAu)
-	fmt.Printf("Fresnel scale is %0.2f km\n", fresnelScale)
-	samplesPerFresnelScale := int(fresnelScale / resolution)
-	fmt.Printf("Samples per Fresnel scale is %d  (To see diffraction effects, this number should be at least 5)\n", samplesPerFresnelScale)
+	if event.StarDiamKm > 0.0 {
+		fmt.Printf("\nStar diameter projected at the plane of the asteroid is %0.3f km\n\n", event.StarDiamKm)
+		starImage, sumOfWeights := BuildStarPsf(event.StarDiamKm, resolution, event.LimbDarkeningCoeff)
+		//fmt.Printf("Sum of weights in star image is %0.6f\n", sumOfWeights)
+		if false { // debug output for use during development
+			imgForDisplay, err = MatrixToGrayViewPercentile(starImage, 0.0, 100)
+			if err != nil {
+				fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
+				os.Exit(11)
+			}
+			err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
+			if err != nil {
+				fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
+				os.Exit(12)
+			}
+		}
+		start := time.Now()
+		newImage, err := ConvolvePSFFFT(intensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
+		elapsed := time.Since(start)
+		fmt.Printf("Convolution of intensity matrix with star image took %s\n", elapsed)
+		if err != nil {
+			fmt.Println(fmt.Errorf("convolution of intensity matrix with star image failed: %w", err))
+			os.Exit(13)
+		}
+
+		imgForDisplay, err := MatrixToGrayViewPercentile(newImage, 0.0, 100)
+		if err != nil {
+			fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
+			os.Exit(11)
+		}
+		err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
+		if err != nil {
+			fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
+			os.Exit(12)
+		}
+	}
+	elapsed = time.Since(programStart)
+	fmt.Printf("\nTotal program run time is %s\n", elapsed)
 
 	if event.WindowSizePixels > 0 {
 		size := event.WindowSizePixels
@@ -238,7 +300,7 @@ func main() {
 
 func FresnelScale(wavelengthNm, ZAu float64) float64 {
 	// Unit	conversions.
-	auToKm := 1.495979e+8 // Convert distance expressed in au to km
+	auToKm := 1.495979e+8 // Convert distance expressed in AU to km
 	nmToKm := 1e-9 * 1e-3 // Convert nm to km
 	wavelengthKm := wavelengthNm * nmToKm
 	ZKm := ZAu * auToKm

@@ -67,14 +67,14 @@
   dY_km_per_sec : -0.904,
 
   star_name: "UCAC4 392-058875",
-  star_diam_on_plane_mas: 0.1,
+  //star_diam_on_plane_mas: 0.2,
 
   // These parameters control limb-darkening for the star.
   // Either the star class or a limb-darkening coefficient can be specified.
   // If both supplied, limb_darkening_coeff is used.
   // If omitted completely, no limb-darkening is applied.
 
-  limb_darkening_coeff: 0.2,
+  limb_darkening_coeff: 0.7,
   star_class : "B",
 
   // Distance to asteroid can be specified two ways. Use either form.
