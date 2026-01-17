@@ -67,15 +67,15 @@
   dY_km_per_sec : -0.904,
 
   star_name: "UCAC4 392-058875",
-  //star_diam_on_plane_mas: 0.2,
+  star_diam_on_plane_mas: 0.15,
 
   // These parameters control limb-darkening for the star.
   // Either the star class or a limb-darkening coefficient can be specified.
   // If both supplied, limb_darkening_coeff is used.
   // If omitted completely, no limb-darkening is applied.
 
-  limb_darkening_coeff: 0.7,
-  star_class : "B",
+  //limb_darkening_coeff: 0.7,
+  star_class : "X",
 
   // Distance to asteroid can be specified two ways. Use either form.
   // If both present, parallax_arcsec is used.
@@ -102,5 +102,9 @@
        major_axis_km : 7.5,
        minor_axis_km : 2.8,
        major_axis_pa_degrees : 94.0,
-  }
+  },
+
+  // This is used only for debugging/development. It identifies a row
+  // of the diffraction shadow to be plotted
+  sample_row: 1000,
 }

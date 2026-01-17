@@ -53,7 +53,7 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 		event.WindowSizePixels = int(wSize)
 	}
 
-	//filePath, ok := getLeafValue(jsonTable, "path_for_ground_shadow_output_folder")
+	//filePath, ok = getLeafValue(jsonTable, "path_for_ground_shadow_output_folder")
 	//if !ok {
 	//	msg = "path_for_ground_shadow_output_folder: not found"
 	//	return msg, false
@@ -254,6 +254,18 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 			msg = "distance_au: is not a float64"
 			return msg, false
 		}
+	}
+
+	sampleRow, ok := getLeafValue(jsonTable, "sample_row")
+	if !ok { // not found
+		event.SampleRow = -1
+	} else {
+		floatSampleRow, ok := sampleRow.(float64)
+		if !ok {
+			msg = "sample_row: is not a float64"
+			return msg, false
+		}
+		event.SampleRow = int(floatSampleRow)
 	}
 
 	// Check to see if a main_body group is present. Required if no external image is supplied.

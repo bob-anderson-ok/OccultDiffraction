@@ -17,13 +17,14 @@ import (
 )
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
-const version = "1_1_0"
+const version = "1_2_0"
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
 
 type OccultationEvent struct {
 	FplaneImage                     *image.Gray // A square array of uint8 values
 	ShowInput                       bool
+	SampleRow                       int
 	RotateGroundShadowTo90pa        bool
 	WindowSizePixels                int
 	PathForGroundShadowOutputFolder string
@@ -66,6 +67,7 @@ func main() {
 	myApp := app.NewWithID("com.gmail.ok.anderson.intensityMatrix")
 	w := myApp.NewWindow("OccultDiffractionApp - user friendly diffraction image (8 bit grayscale png)")
 	w.Resize(fyne.Size{Height: 800, Width: 1200})
+
 	args := os.Args
 
 	if len(args) != 2 {
@@ -112,6 +114,7 @@ func main() {
 	Npts := event.FundamentalPlaneWidthPoints
 
 	fmt.Printf("\nVersion %s\n\n", version)
+
 	// Calculate resolution in fundamental plane
 	resolution := event.FundamentalPlaneWidthKm / float64(Npts)
 	fmt.Printf("Resolution in fundamental plane is %0.3f km/pixel\n", resolution)
@@ -173,6 +176,39 @@ func main() {
 	elapsed := time.Since(start)
 	fmt.Printf("Generation of the geometric shadow took %s\n", elapsed)
 
+	// Here we figure out the proper value to use for the limb darkening coefficient based on
+	// the supplied parameters.
+	LimbValues := map[string]float64{
+		"O": 0.05,
+		"B": 0.2,
+		"A": 0.5,
+		"F": 0.6,
+		"G": 0.7,
+		"K": 0.7,
+		"M": 0.7,
+	}
+	if event.StarDiamMas > 0.0 {
+		if event.LimbDarkeningCoeff == 0.0 { // Limb darkening coefficient takes precedence over star class
+			if event.StarClass == "" {
+				// No star class or limb darkening coefficient given, so we use a default value of 0.7
+				event.LimbDarkeningCoeff = 0.7
+			} else {
+				v, ok := LimbValues[event.StarClass]
+				if !ok {
+					fmt.Println(fmt.Errorf(
+						"\n\tThe star class %q is not recognized. Default value will be used.\n",
+						event.StarClass),
+					)
+					event.LimbDarkeningCoeff = 0.7
+				} else {
+					event.LimbDarkeningCoeff = v // Use value from the table
+				}
+			}
+		}
+	}
+
+	fmt.Println("Limb darkening coefficient set to:", event.LimbDarkeningCoeff)
+
 	// If a user gave us distance in arcseconds, it is given priority, and
 	// we overwrite any value that may also have been given in AU.
 	if event.ParallaxArcsec > 0.0 {
@@ -185,7 +221,6 @@ func main() {
 	WavelengthKm := event.ObservationWavelengthNm * nmToKm
 	Lkm := event.FundamentalPlaneWidthKm
 	Zkm := event.DistanceAu * auToKm
-	//Npts := event.FundamentalPlaneWidthPoints
 
 	// Some elementary checks to make sure that the user has not supplied bad parameters
 	if Lkm <= 0.0 {
@@ -206,6 +241,7 @@ func main() {
 	fmt.Printf("Calculation of the observation e-field took %s\n", elapsed)
 
 	start = time.Now()
+
 	// incidentWave is used to convert the aperture image to an occulter image using Babinet's formula
 	incidentWave := complex(1.0, 0.0)
 
@@ -220,9 +256,11 @@ func main() {
 		fmt.Println(fmt.Errorf("reshape of intensity vector failed: %w", err))
 		os.Exit(10)
 	}
+
 	elapsed = time.Since(start)
 	fmt.Printf("Calculation of the observation intensity took %s\n", elapsed)
 
+	// Make a user-friendly .png of the observation intensity matrix
 	imgForDisplay, err := MatrixToGrayViewPercentile(intensityMatrix, 0.0, 100)
 	if err != nil {
 		fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
@@ -235,21 +273,24 @@ func main() {
 		os.Exit(12)
 	}
 
+	// Make the scientific (well-defined scaling) version of the intensity matrix
 	occultImage, err := MatrixToGray16Data(intensityMatrix, 4000)
 	if err != nil {
 		fmt.Println(fmt.Errorf("creation of occultImage failed: %w", err))
 		os.Exit(13)
 	}
+
 	err = SaveGray16PNG("occultImage16bit.png", occultImage)
 	if err != nil {
 		fmt.Println(fmt.Errorf("writing of %q failed: %w", "occultImage16bit.png", err))
 		os.Exit(14)
 	}
 
+	var newImage [][]float64
+
 	if event.StarDiamKm > 0.0 {
 		fmt.Printf("\nStar diameter projected at the plane of the asteroid is %0.3f km\n\n", event.StarDiamKm)
 		starImage, sumOfWeights := BuildStarPsf(event.StarDiamKm, resolution, event.LimbDarkeningCoeff)
-		//fmt.Printf("Sum of weights in star image is %0.6f\n", sumOfWeights)
 		if false { // debug output for use during development
 			imgForDisplay, err = MatrixToGrayViewPercentile(starImage, 0.0, 100)
 			if err != nil {
@@ -262,26 +303,31 @@ func main() {
 				os.Exit(12)
 			}
 		}
+
 		start := time.Now()
-		newImage, err := ConvolvePSFFFT(intensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
-		elapsed := time.Since(start)
-		fmt.Printf("Convolution of intensity matrix with star image took %s\n", elapsed)
+		newImage, err = ConvolvePSFFFT(intensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
 		if err != nil {
 			fmt.Println(fmt.Errorf("convolution of intensity matrix with star image failed: %w", err))
 			os.Exit(13)
 		}
 
+		elapsed := time.Since(start)
+		fmt.Printf("Convolution of intensity matrix with star image took %s\n", elapsed)
+
 		imgForDisplay, err := MatrixToGrayViewPercentile(newImage, 0.0, 100)
+		// comment place here just to suppress dup lines warning
 		if err != nil {
 			fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
 			os.Exit(11)
 		}
+
 		err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
 		if err != nil {
 			fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
 			os.Exit(12)
 		}
 	}
+
 	elapsed = time.Since(programStart)
 	fmt.Printf("\nTotal program run time is %s\n", elapsed)
 
@@ -293,6 +339,35 @@ func main() {
 		img.FillMode = canvas.ImageFillContain
 		w.SetContent(container.NewStack(img))
 		w.Resize(fyne.Size{Height: float32(size), Width: float32(size)})
+		w.Show()
+
+		var img2 image.Image
+		gotCurveToPlot := false
+		if event.SampleRow >= 0 && event.SampleRow < Npts {
+			gotCurveToPlot = true
+			if event.StarDiamKm > 0.0 {
+				img2, err = makePlotImage(900, 500, event.SampleRow, newImage[event.SampleRow][:])
+				if err != nil {
+					panic(err)
+				}
+			} else {
+				img2, err = makePlotImage(1200, 500, event.SampleRow, intensityMatrix[event.SampleRow][:])
+				if err != nil {
+					panic(err)
+				}
+			}
+		}
+
+		if gotCurveToPlot {
+			plotImg := canvas.NewImageFromImage(img2)
+			plotImg.FillMode = canvas.ImageFillContain
+			plotImg.SetMinSize(fyne.NewSize(1200, 500))
+
+			w2 := myApp.NewWindow("Second Window")
+			w2.SetContent(container.NewCenter(plotImg))
+			w2.Resize(fyne.NewSize(950, 550))
+			w2.Show()
+		}
 
 		w.ShowAndRun()
 	}
