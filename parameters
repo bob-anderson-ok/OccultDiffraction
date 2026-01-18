@@ -5,14 +5,7 @@
 
   show_input_bool : false,
 
-  // Set this flag to false if you want the ground shadow PA to be
-  // the same as the fundamental plane PA For Occult usage, this should always be false
-  // for planned usage by Occult.
-  // (It's not yet implemented anyway, so currently this setting doesn't matter.)
-
-  rotate_ground_shadow_to_90_degree_pa_bool : false,
-
-  // Set window_size to 0 to suppress display of 'user friendly' ground shadow
+  // Set window_size to 0 to suppress display of ground shadow (and possibly other plots)
 
   window_size_pixels : 800,
 
@@ -35,7 +28,7 @@
 
   // path_for_ground_shadow_output_folder : "C:/Users/boban/tool_test_folder",
 
-  title : "(9203) Myrtus 2025 Feb 22",
+  title : "(9203) Myrtus 2025 Feb 22",  // Used to add title to ground shadow display image (if present)
 
   fundamental_plane_width_km : 40,
   fundamental_plane_width_num_points : 2000,  // Overridden if external image is supplied
@@ -48,36 +41,33 @@
   // parameter to control how many entries are processed). Each image will be weighted by the QE
   // value at that wavelength for summing with the other images.
 
-  path_to_qe_table_file : "C:/Users/boban/Dropbox/GolandProjects/IOTAtools/imx174QEapproxEvery5nm",
-
-  // If a QE table is provided, the qe_table_stride parameter determines how many entries are processed
-  // from the table. stride=1 will process all entries. stride=5 will process every 5th entry.
-
-  qe_table_stride: 5,
+  path_to_qe_table_file : "qhy174QEevery5nm",
 
   // If no QE table is provided, the ground image will be generated for the wavelength
   // specified below. This parameter is ignored if a QE table is provided.
 
   observation_wavelength_nm : 500,
 
-  // The next 2 values determine shadow speed and fundamental plane PA (currently unused and not relevant
-  // for Occult usage.
+  // The next 3 values determine shadow speed and fundamental plane PA (not relevant
+  // for Occult usage except maybe for comparison during development). They are used
+  // to extract a sample light curve from the diffraction shadow.
 
-  dX_km_per_sec : 5.074,
-  dY_km_per_sec : -0.904,
+  // dX_km_per_sec : 5.074,
+  // dY_km_per_sec : -0.904,
+  // path_perpendicular_offset_from_center_km : 1.875,
 
   star_name: "UCAC4 392-058875",
-  star_diam_on_plane_mas: 0.15,
+  //star_diam_on_plane_mas: 0.15,
 
-  // These parameters control limb-darkening for the star.
+  // The following parameters control limb-darkening for the star.
   // Either the star class or a limb-darkening coefficient can be specified.
-  // If both supplied, limb_darkening_coeff is used.
+  // If both are supplied, the limb_darkening_coeff is used.
   // If omitted completely, no limb-darkening is applied.
 
-  //limb_darkening_coeff: 0.7,
-  star_class : "X",
+  limb_darkening_coeff: 0.7,
+  star_class : "K",
 
-  // Distance to asteroid can be specified two ways. Use either form.
+  // Distance to asteroid can be specified two ways.
   // If both present, parallax_arcsec is used.
 
   parallax_arcsec : 3.7711,
@@ -97,14 +87,16 @@
 
   // This section can be omitted if no satellite is present.
   satellite : {
-       x_center_km : -5.8,
-       y_center_km : -0.6,
-       major_axis_km : 7.5,
-       minor_axis_km : 2.8,
-       major_axis_pa_degrees : 94.0,
+      x_center_km : -5.8,
+      y_center_km : -0.6,
+      major_axis_km : 7.5,
+      minor_axis_km : 2.8,
+      major_axis_pa_degrees : 94.0,
   },
 
-  // This is used only for debugging/development. It identifies a row
-  // of the diffraction shadow to be plotted
-  sample_row: 1000,
+  // This section is used only for debugging/development. It identifies a row
+  // of the diffraction shadow to be plotted. This will be superseded
+  // by the use of dX_km_per_sec and dY_km_per_sec and path_perpendicular_offset_from_center_km.
+  sample_row: 1074,    // Lower notch
+  //sample_row: 966,     // Upper notch
 }

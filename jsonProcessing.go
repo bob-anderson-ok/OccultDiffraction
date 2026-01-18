@@ -29,17 +29,17 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 		}
 	}
 
-	rotationFlag, ok := getLeafValue(jsonTable, "rotate_ground_shadow_to_90_degree_pa_bool")
-	if !ok {
-		event.RotateGroundShadowTo90pa = true // Default: rotate ground shadow to a standard 90 degree PA
-	} else {
-		flagValue, ok := rotationFlag.(bool)
-		if !ok {
-			msg = "rotate_ground_shadow_to_90_degree_pa_bool: is not a bool"
-			return msg, false
-		}
-		event.RotateGroundShadowTo90pa = flagValue
-	}
+	//rotationFlag, ok := getLeafValue(jsonTable, "rotate_ground_shadow_to_90_degree_pa_bool")
+	//if !ok {
+	//	event.RotateGroundShadowTo90pa = true // Default: rotate ground shadow to a standard 90 degree PA
+	//} else {
+	//	flagValue, ok := rotationFlag.(bool)
+	//	if !ok {
+	//		msg = "rotate_ground_shadow_to_90_degree_pa_bool: is not a bool"
+	//		return msg, false
+	//	}
+	//	event.RotateGroundShadowTo90pa = flagValue
+	//}
 
 	windowSize, ok := getLeafValue(jsonTable, "window_size_pixels")
 	if !ok {
@@ -84,18 +84,6 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 			return msg, false
 		}
 		mainBodyRequired = false
-	}
-
-	stride, ok := getLeafValue(jsonTable, "qe_table_stride")
-	if !ok {
-		event.QEtableStride = 1 // Default value
-	} else {
-		rawStride, ok := stride.(float64)
-		if !ok {
-			msg = "qe_table_stride: is not an int"
-			return msg, false
-		}
-		event.QEtableStride = int(rawStride)
 	}
 
 	title, ok := getLeafValue(jsonTable, "title")
@@ -155,25 +143,21 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 	}
 
 	dX, ok := getLeafValue(jsonTable, "dX_km_per_sec")
-	if !ok {
-		msg = "dX_km_per_sec: not found"
-		return msg, false
-	}
-	event.DxKmPerSec, ok = dX.(float64)
-	if !ok {
-		msg = "dX_km_per_sec: is not a float64"
-		return msg, false
+	if ok {
+		event.DxKmPerSec, ok = dX.(float64)
+		if !ok {
+			msg = "dX_km_per_sec: is not a float64"
+			return msg, false
+		}
 	}
 
 	dY, ok := getLeafValue(jsonTable, "dY_km_per_sec")
-	if !ok {
-		msg = "dY_km_per_sec: not found"
-		return msg, false
-	}
-	event.DyKmPerSec, ok = dY.(float64)
-	if !ok {
-		msg = "dY_km_per_sec: is not a float64"
-		return msg, false
+	if ok {
+		event.DyKmPerSec, ok = dY.(float64)
+		if !ok {
+			msg = "dY_km_per_sec: is not a float64"
+			return msg, false
+		}
 	}
 
 	starName, ok := getLeafValue(jsonTable, "star_name")

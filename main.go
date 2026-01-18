@@ -17,7 +17,7 @@ import (
 )
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
-const version = "1_2_0"
+const version = "1_3_0"
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
 
@@ -25,12 +25,11 @@ type OccultationEvent struct {
 	FplaneImage                     *image.Gray // A square array of uint8 values
 	ShowInput                       bool
 	SampleRow                       int
-	RotateGroundShadowTo90pa        bool
 	WindowSizePixels                int
 	PathForGroundShadowOutputFolder string
 	PathToExternalImage             string
 	PathToQEtable                   string
-	QEtableStride                   int
+	QEtable                         [][2]float64
 	Title                           string
 	FundamentalPlaneWidthKm         float64
 	FundamentalPlaneWidthPoints     int
@@ -105,10 +104,40 @@ func main() {
 		fmt.Println(string(data))
 	}
 
+	// If a path to a camera response json file was given, read it
+	if event.PathToQEtable != "" {
+		// Read the Json5 (or Json) parameter file
+		data, err := os.ReadFile(event.PathToQEtable)
+		if err != nil {
+			fmt.Println(fmt.Errorf("\n\tAttempt to read file %q failed: %w\n", path, err))
+			os.Exit(13)
+		}
+		var qeTable [][2]float64
+		qeTable, err = parseArrayFormat(data)
+		if err != nil {
+			fmt.Println(fmt.Errorf("\n\tError reading camera response file %q: %w\n", event.PathToQEtable, err))
+			os.Exit(15)
+		}
+		event.QEtable = qeTable
+		//fmt.Println("Got the camera table", len(qeTable), "entries")
+		if len(qeTable) < 1 {
+			fmt.Println(fmt.Errorf("\n\tThe camera response file %q is empty.", event.PathToQEtable))
+			os.Exit(14)
+		}
+		var cumWeights = 0.0
+		for i := 0; i < len(qeTable); i++ {
+			cumWeights += qeTable[i][1]
+		}
+		for i := 0; i < len(qeTable); i++ {
+			qeTable[i][1] /= cumWeights
+		}
+		MakeCameraResponsePlot(qeTable, event.PathToQEtable)
+	}
+
 	// Sanity check on number of points in a fundamental plane
 	if event.FundamentalPlaneWidthPoints < 10 {
 		fmt.Println(fmt.Errorf("\n\tThe fundamental plane width must be at least 10 points."))
-		os.Exit(15)
+		os.Exit(16)
 	}
 
 	Npts := event.FundamentalPlaneWidthPoints
@@ -196,7 +225,7 @@ func main() {
 				v, ok := LimbValues[event.StarClass]
 				if !ok {
 					fmt.Println(fmt.Errorf(
-						"\n\tThe star class %q is not recognized. Default value will be used.\n",
+						"\n\tThe star class %q is not recognized. Default value of 0.7 will be used.\n",
 						event.StarClass),
 					)
 					event.LimbDarkeningCoeff = 0.7
@@ -235,10 +264,29 @@ func main() {
 
 	event.StarDiamKm = 1.496e8 * event.DistanceAu * event.StarDiamMas / (1000.0 * 206265)
 
-	start = time.Now()
-	eField := FullObservationPlaneSincSolution(Lkm, Zkm, WavelengthKm, sourcePlane)
-	elapsed = time.Since(start)
-	fmt.Printf("Calculation of the observation e-field took %s\n", elapsed)
+	var eField []complex128
+	if len(event.QEtable) > 0 {
+		// Get the first scaled eField to use to accumulate all the rest
+		WavelengthKm = event.QEtable[0][0] * nmToKm
+		eField = FullObservationPlaneSincSolution(Lkm, Zkm, WavelengthKm, sourcePlane)
+		scaleComplex(eField, event.QEtable[0][1])
+
+		// Now do the rest
+		for i := 1; i < len(event.QEtable); i++ {
+			// Compute the effective wavelength at each wavelength bin
+			WavelengthKm = event.QEtable[i][0] * nmToKm
+			start = time.Now()
+			newField := FullObservationPlaneSincSolution(Lkm, Zkm, WavelengthKm, sourcePlane)
+			addScaledComplexInPlace(eField, newField, event.QEtable[i][1])
+			elapsed = time.Since(start)
+			fmt.Printf("Calculation of wavelength %0.1f e-field took %s\n", event.QEtable[i][0], elapsed)
+		}
+	} else {
+		start = time.Now()
+		eField = FullObservationPlaneSincSolution(Lkm, Zkm, WavelengthKm, sourcePlane)
+		elapsed = time.Since(start)
+		fmt.Printf("Calculation of the observation e-field took %s\n", elapsed)
+	}
 
 	start = time.Now()
 
@@ -333,25 +381,52 @@ func main() {
 
 	if event.WindowSizePixels > 0 {
 		size := event.WindowSizePixels
-		w.SetTitle(event.Title)
+
+		winTitle := event.Title
+		if len(event.QEtable) > 0 {
+			winTitle += " (multi-wavelength composite using camera response curve)"
+		}
+
+		// w is our main window, created at the beginning of the program
+		w.SetTitle(winTitle)
+		w.SetPadded(false)
 		w.CenterOnScreen()
+
 		img := canvas.NewImageFromFile("diffractionImage8bit.png")
+
 		img.FillMode = canvas.ImageFillContain
-		w.SetContent(container.NewStack(img))
 		w.Resize(fyne.Size{Height: float32(size), Width: float32(size)})
+
+		w.SetContent(container.NewStack(img))
+
+		if event.SampleRow >= 0 && event.SampleRow < Npts {
+			line := canvas.NewLine(color.RGBA{R: 255, A: 255})
+			// Convert row, col values to window coordinates
+			scaledY := float32(event.SampleRow) / float32(Npts) * float32(size)
+			scaledX := float32(size)
+			line.Position1 = fyne.NewPos(0, scaledY)
+			line.Position2 = fyne.NewPos(scaledX, scaledY)
+			line.StrokeWidth = 2
+
+			content := container.NewWithoutLayout(img, line)
+			w.SetContent(content)
+		} else {
+			w.SetContent(container.NewStack(img))
+		}
 		w.Show()
 
 		var img2 image.Image
 		gotCurveToPlot := false
 		if event.SampleRow >= 0 && event.SampleRow < Npts {
 			gotCurveToPlot = true
+			edges := FindEdgesInGeometricShadow(event.FplaneImage, event.SampleRow)
 			if event.StarDiamKm > 0.0 {
-				img2, err = makePlotImage(900, 500, event.SampleRow, newImage[event.SampleRow][:])
+				img2, err = makePlotImage(900, 500, event.SampleRow, newImage[event.SampleRow][:], edges)
 				if err != nil {
 					panic(err)
 				}
 			} else {
-				img2, err = makePlotImage(1200, 500, event.SampleRow, intensityMatrix[event.SampleRow][:])
+				img2, err = makePlotImage(1200, 500, event.SampleRow, intensityMatrix[event.SampleRow][:], edges)
 				if err != nil {
 					panic(err)
 				}
@@ -363,10 +438,21 @@ func main() {
 			plotImg.FillMode = canvas.ImageFillContain
 			plotImg.SetMinSize(fyne.NewSize(1200, 500))
 
-			w2 := myApp.NewWindow("Second Window")
+			w2 := myApp.NewWindow("Sample light curve")
 			w2.SetContent(container.NewCenter(plotImg))
 			w2.Resize(fyne.NewSize(950, 550))
 			w2.Show()
+		}
+
+		if len(event.QEtable) > 0 {
+			cameraImg := canvas.NewImageFromFile("camera_response.png")
+			cameraImg.FillMode = canvas.ImageFillContain
+			cameraImg.SetMinSize(fyne.NewSize(1200, 500))
+
+			w3 := myApp.NewWindow("Camera resonse curve")
+			w3.SetContent(container.NewCenter(cameraImg))
+			w3.Resize(fyne.NewSize(950, 550))
+			w3.Show()
 		}
 
 		w.ShowAndRun()
@@ -380,4 +466,48 @@ func FresnelScale(wavelengthNm, ZAu float64) float64 {
 	wavelengthKm := wavelengthNm * nmToKm
 	ZKm := ZAu * auToKm
 	return math.Sqrt(wavelengthKm * ZKm / 2)
+}
+
+func FindEdgesInGeometricShadow(fPlane *image.Gray, row int) []float64 {
+	var ans []float64
+	bounds := fPlane.Bounds()
+	width := bounds.Dx()
+
+	var colorAtNextEdge uint8 = 0
+	for col := range width {
+		pixelValue := fPlane.GrayAt(col, row).Y
+		if pixelValue > 0 {
+			pixelValue = 1
+		}
+
+		if pixelValue == colorAtNextEdge {
+			ans = append(ans, float64(col))
+			colorAtNextEdge = 1 - colorAtNextEdge // Toggle the color we treat as an edge
+		}
+	}
+	return ans
+}
+
+// Option 1: Array of arrays [[wavelength, weight], ...]
+func parseArrayFormat(data []byte) ([][2]float64, error) {
+	var pairs [][2]float64
+	err := json.Unmarshal(data, &pairs)
+	return pairs, err
+}
+
+func addScaledComplexInPlace(a []complex128, b []complex128, scaleB float64) {
+	if len(a) != len(b) {
+		panic("vector lengths don't match")
+	}
+
+	for i := range a {
+		a[i] = a[i] + complex(scaleB, 0)*b[i]
+	}
+}
+
+func scaleComplex(v []complex128, scale float64) {
+	s := complex(scale, 0)
+	for i := range v {
+		v[i] *= s
+	}
 }
