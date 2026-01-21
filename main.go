@@ -17,14 +17,19 @@ import (
 )
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
-const version = "1_3_0"
+const version = "1_5_0"
 
 // !!!!! This MUST match the app name given in the run configuration !!!!!
 
 type OccultationEvent struct {
 	FplaneImage                     *image.Gray // A square array of uint8 values
+	IntensityMatrix                 [][]float64
+	GeometricMatrix                 [][]float64
 	ShowInput                       bool
-	SampleRow                       int
+	PathSamplePoints                [][3]float64
+	PathStart                       [2]float64 // [x,y] fractional pixel coordinates of path start point
+	PathEnd                         [2]float64 // [x,y] fractional pixel coordinates of path end point
+	PathDirection                   string
 	WindowSizePixels                int
 	PathForGroundShadowOutputFolder string
 	PathToExternalImage             string
@@ -33,15 +38,18 @@ type OccultationEvent struct {
 	Title                           string
 	FundamentalPlaneWidthKm         float64
 	FundamentalPlaneWidthPoints     int
-	CameraExposureSecs              float64
 	ObservationWavelengthNm         float64
 	DxKmPerSec                      float64
 	DyKmPerSec                      float64
+	ShadowSpeedKmPerSec             float64
+	PathAngleDegrees                float64
+	PathOffsetFromCenterKm          float64
 	StarName                        string
 	StarDiamMas                     float64
 	StarDiamKm                      float64
 	LimbDarkeningCoeff              float64
 	StarClass                       string
+	PercentMagDrop                  float64
 	ParallaxArcsec                  float64
 	DistanceAu                      float64
 	MainBodyGiven                   bool
@@ -62,8 +70,11 @@ func main() {
 
 	programStart := time.Now()
 
+	var p1 AnnotatedPoint
+	var p2 AnnotatedPoint
+
 	// We supply an ID (hopefully unique) because we may need to use the preferences API
-	myApp := app.NewWithID("com.gmail.ok.anderson.intensityMatrix")
+	myApp := app.NewWithID("com.gmail.ok.anderson.bob")
 	w := myApp.NewWindow("OccultDiffractionApp - user friendly diffraction image (8 bit grayscale png)")
 	w.Resize(fyne.Size{Height: 800, Width: 1200})
 
@@ -140,7 +151,7 @@ func main() {
 		os.Exit(16)
 	}
 
-	Npts := event.FundamentalPlaneWidthPoints
+	Npts := event.FundamentalPlaneWidthPoints // Just a shorthand version
 
 	fmt.Printf("\nVersion %s\n\n", version)
 
@@ -161,7 +172,12 @@ func main() {
 			fmt.Println(fmt.Errorf("\n\tAttempt to read external image %q failed: %w\n", event.PathToExternalImage, err))
 			os.Exit(5)
 		}
-		defer f.Close()
+		//defer f.Close()
+		defer func() {
+			if cerr := f.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}()
 
 		img, err := png.Decode(f)
 		if err != nil {
@@ -187,9 +203,10 @@ func main() {
 
 		// Override the value (possibly) supplied in the fundamental_plane_width_num_points parameter
 		event.FundamentalPlaneWidthPoints = img.Bounds().Dx()
+		Npts = event.FundamentalPlaneWidthPoints // Shorthand
 		fmt.Println(ColorModelString(img.ColorModel()))
 	} else { // No image supplied by user, so we start our own.
-		event.FplaneImage = image.NewGray(image.Rect(0, 0, event.FundamentalPlaneWidthPoints, event.FundamentalPlaneWidthPoints))
+		event.FplaneImage = image.NewGray(image.Rect(0, 0, Npts, Npts))
 		FillFplane(event.FplaneImage, true)
 	}
 
@@ -201,6 +218,7 @@ func main() {
 	}
 
 	sourcePlane := ConvertSourcePlaneImageToComplex(event.FplaneImage)
+	event.GeometricMatrix = ConvertSourcePlaneImageToMatrix(event.FplaneImage)
 
 	elapsed := time.Since(start)
 	fmt.Printf("Generation of the geometric shadow took %s\n", elapsed)
@@ -262,6 +280,26 @@ func main() {
 		os.Exit(10)
 	}
 
+	event.ShadowSpeedKmPerSec = math.Sqrt(event.DxKmPerSec*event.DxKmPerSec + event.DyKmPerSec*event.DyKmPerSec)
+	if event.ShadowSpeedKmPerSec > 0.0 {
+		event.PathAngleDegrees = math.Atan2(-event.DxKmPerSec, -event.DyKmPerSec) * 180.0 / math.Pi
+		if event.PathAngleDegrees < 0.0 {
+			event.PathAngleDegrees += 360.0
+		}
+		fmt.Printf("\nPath angle is %0.1f degrees\n", event.PathAngleDegrees)
+		fmt.Printf("Shadow speed is %0.3f km/sec\n\n", event.ShadowSpeedKmPerSec)
+
+		// The following function sets event.PathStart and event.PathEnd variables
+		p1, p2, event.PathDirection, err = processPathDirection(Npts, p1, p2, &event)
+		if err != nil {
+			fmt.Println(fmt.Errorf("\n\tProcessing of path direction failed: %w", err))
+			os.Exit(10)
+		}
+		fmt.Printf("Direction: %s\n", event.PathDirection)
+		computePathPoints(&event)
+
+	}
+
 	event.StarDiamKm = 1.496e8 * event.DistanceAu * event.StarDiamMas / (1000.0 * 206265)
 
 	var eField []complex128
@@ -299,65 +337,45 @@ func main() {
 			imag(incidentWave-eField[i])*imag(incidentWave-eField[i])
 	}
 
-	intensityMatrix, err := Reshape1DTo2D(intensity, Npts, Npts)
+	event.IntensityMatrix, err = Reshape1DTo2D(intensity, Npts, Npts)
 	if err != nil {
 		fmt.Println(fmt.Errorf("reshape of intensity vector failed: %w", err))
 		os.Exit(10)
 	}
 
+	// Here we apply any necessary magDrop adjustments
+	if event.PercentMagDrop > 0 { // Check for value given and bonus: ignore negative values
+		if event.PercentMagDrop > 100 {
+			fmt.Println(fmt.Errorf("percentMagDrop of %0.1f is too large. Setting it to 100.0", event.PercentMagDrop))
+			event.PercentMagDrop = 100.0
+		}
+		scaleFactor := event.PercentMagDrop / 100.0
+		shiftUp := 1.0 - scaleFactor
+		for row := 0; row < len(event.IntensityMatrix); row++ {
+			for col := 0; col < len(event.IntensityMatrix[row]); col++ {
+				event.IntensityMatrix[row][col] *= scaleFactor
+				event.IntensityMatrix[row][col] += shiftUp
+			}
+		}
+	}
+
 	elapsed = time.Since(start)
 	fmt.Printf("Calculation of the observation intensity took %s\n", elapsed)
-
-	// Make a user-friendly .png of the observation intensity matrix
-	imgForDisplay, err := MatrixToGrayViewPercentile(intensityMatrix, 0.0, 100)
-	if err != nil {
-		fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
-		os.Exit(11)
-	}
-
-	err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
-	if err != nil {
-		fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
-		os.Exit(12)
-	}
-
-	// Make the scientific (well-defined scaling) version of the intensity matrix
-	occultImage, err := MatrixToGray16Data(intensityMatrix, 4000)
-	if err != nil {
-		fmt.Println(fmt.Errorf("creation of occultImage failed: %w", err))
-		os.Exit(13)
-	}
-
-	err = SaveGray16PNG("occultImage16bit.png", occultImage)
-	if err != nil {
-		fmt.Println(fmt.Errorf("writing of %q failed: %w", "occultImage16bit.png", err))
-		os.Exit(14)
-	}
 
 	var newImage [][]float64
 
 	if event.StarDiamKm > 0.0 {
 		fmt.Printf("\nStar diameter projected at the plane of the asteroid is %0.3f km\n\n", event.StarDiamKm)
 		starImage, sumOfWeights := BuildStarPsf(event.StarDiamKm, resolution, event.LimbDarkeningCoeff)
-		if false { // debug output for use during development
-			imgForDisplay, err = MatrixToGrayViewPercentile(starImage, 0.0, 100)
-			if err != nil {
-				fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
-				os.Exit(11)
-			}
-			err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
-			if err != nil {
-				fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
-				os.Exit(12)
-			}
-		}
 
 		start := time.Now()
-		newImage, err = ConvolvePSFFFT(intensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
+		newImage, err = ConvolvePSFFFT(event.IntensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
 		if err != nil {
 			fmt.Println(fmt.Errorf("convolution of intensity matrix with star image failed: %w", err))
 			os.Exit(13)
 		}
+
+		event.IntensityMatrix = newImage
 
 		elapsed := time.Since(start)
 		fmt.Printf("Convolution of intensity matrix with star image took %s\n", elapsed)
@@ -374,12 +392,92 @@ func main() {
 			fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
 			os.Exit(12)
 		}
+
+		// Make the scientific (well-defined scaling) version of the intensity matrix
+		occultImage, err := MatrixToGray16Data(newImage, 4000)
+		if err != nil {
+			fmt.Println(fmt.Errorf("creation of occultImage failed: %w", err))
+			os.Exit(13)
+		}
+
+		err = SaveGray16PNG("occultImage16bit.png", occultImage)
+		if err != nil {
+			fmt.Println(fmt.Errorf("writing of %q failed: %w", "occultImage16bit.png", err))
+			os.Exit(14)
+		}
+	} else {
+		// Make a user-friendly .png of the observation intensity matrix
+		imgForDisplay, err := MatrixToGrayViewPercentile(event.IntensityMatrix, 0.0, 100)
+		if err != nil {
+			fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
+			os.Exit(11)
+		}
+
+		err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
+		if err != nil {
+			fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
+			os.Exit(12)
+		}
+
+		// Make the scientific (well-defined scaling) version of the intensity matrix
+		occultImage, err := MatrixToGray16Data(event.IntensityMatrix, 4000)
+		if err != nil {
+			fmt.Println(fmt.Errorf("creation of occultImage failed: %w", err))
+			os.Exit(13)
+		}
+
+		err = SaveGray16PNG("occultImage16bit.png", occultImage)
+		if err != nil {
+			fmt.Println(fmt.Errorf("writing of %q failed: %w", "occultImage16bit.png", err))
+			os.Exit(14)
+		}
 	}
+
+	//if event.StarDiamKm > 0.0 {
+	//	fmt.Printf("\nStar diameter projected at the plane of the asteroid is %0.3f km\n\n", event.StarDiamKm)
+	//	starImage, sumOfWeights := BuildStarPsf(event.StarDiamKm, resolution, event.LimbDarkeningCoeff)
+	//
+	//	start := time.Now()
+	//	newImage, err = ConvolvePSFFFT(event.IntensityMatrix, starImage, sumOfWeights, ConvSame, PadReplicate, false)
+	//	if err != nil {
+	//		fmt.Println(fmt.Errorf("convolution of intensity matrix with star image failed: %w", err))
+	//		os.Exit(13)
+	//	}
+	//
+	//	elapsed := time.Since(start)
+	//	fmt.Printf("Convolution of intensity matrix with star image took %s\n", elapsed)
+	//
+	//	imgForDisplay, err := MatrixToGrayViewPercentile(newImage, 0.0, 100)
+	//	// comment place here just to suppress dup lines warning
+	//	if err != nil {
+	//		fmt.Println(fmt.Errorf("creation of the display image failed: %w", err))
+	//		os.Exit(11)
+	//	}
+	//
+	//	err = SaveGrayPNG("diffractionImage8bit.png", imgForDisplay)
+	//	if err != nil {
+	//		fmt.Println(fmt.Errorf("writing of %q failed: %w", "diffractionImage8bit.png", err))
+	//		os.Exit(12)
+	//	}
+	//
+	//	// Make the scientific (well-defined scaling) version of the intensity matrix
+	//	occultImage, err := MatrixToGray16Data(newImage, 4000)
+	//	if err != nil {
+	//		fmt.Println(fmt.Errorf("creation of occultImage failed: %w", err))
+	//		os.Exit(13)
+	//	}
+	//
+	//	err = SaveGray16PNG("occultImage16bit.png", occultImage)
+	//	if err != nil {
+	//		fmt.Println(fmt.Errorf("writing of %q failed: %w", "occultImage16bit.png", err))
+	//		os.Exit(14)
+	//	}
+	//}
 
 	elapsed = time.Since(programStart)
 	fmt.Printf("\nTotal program run time is %s\n", elapsed)
 
-	if event.WindowSizePixels > 0 {
+	if event.WindowSizePixels > 0 { // We have lots of displays to make!
 		size := event.WindowSizePixels
 
 		winTitle := event.Title
@@ -399,16 +497,32 @@ func main() {
 
 		w.SetContent(container.NewStack(img))
 
-		if event.SampleRow >= 0 && event.SampleRow < Npts {
+		// Here we add a red line to show the star path with colored dots at the ends to show direction(red to green)
+		if event.ShadowSpeedKmPerSec > 0.0 {
 			line := canvas.NewLine(color.RGBA{R: 255, A: 255})
 			// Convert row, col values to window coordinates
-			scaledY := float32(event.SampleRow) / float32(Npts) * float32(size)
-			scaledX := float32(size)
-			line.Position1 = fyne.NewPos(0, scaledY)
-			line.Position2 = fyne.NewPos(scaledX, scaledY)
+			scaledY1 := float32(p1.Y) / float32(Npts) * float32(size)
+			scaledX1 := float32(p1.X) / float32(Npts) * float32(size)
+
+			scaledY2 := float32(p2.Y) / float32(Npts) * float32(size)
+			scaledX2 := float32(p2.X) / float32(Npts) * float32(size)
+
+			line.Position1 = fyne.NewPos(scaledX1, scaledY1)
+			line.Position2 = fyne.NewPos(scaledX2, scaledY2)
 			line.StrokeWidth = 2
 
-			content := container.NewWithoutLayout(img, line)
+			// Here we use PathStart and PathEnd to place red and green dots at the start and end of the real path
+
+			dotSize := float32(10)
+			scaledDotX := float32(event.PathStart[0]) / float32(Npts) * float32(size)
+			scaledDotY := float32(event.PathStart[1]) / float32(Npts) * float32(size)
+			startDot := placeDotAt(scaledDotX, scaledDotY, dotSize, color.RGBA{R: 255, A: 255})
+
+			scaledDotX = float32(event.PathEnd[0]) / float32(Npts) * float32(size)
+			scaledDotY = float32(event.PathEnd[1]) / float32(Npts) * float32(size)
+			endDot := placeDotAt(scaledDotX, scaledDotY, dotSize, color.RGBA{G: 255, A: 255})
+
+			content := container.NewWithoutLayout(img, line, startDot, endDot)
 			w.SetContent(content)
 		} else {
 			w.SetContent(container.NewStack(img))
@@ -417,19 +531,12 @@ func main() {
 
 		var img2 image.Image
 		gotCurveToPlot := false
-		if event.SampleRow >= 0 && event.SampleRow < Npts {
+		if event.ShadowSpeedKmPerSec > 0.0 {
 			gotCurveToPlot = true
-			edges := FindEdgesInGeometricShadow(event.FplaneImage, event.SampleRow)
-			if event.StarDiamKm > 0.0 {
-				img2, err = makePlotImage(900, 500, event.SampleRow, newImage[event.SampleRow][:], edges)
-				if err != nil {
-					panic(err)
-				}
-			} else {
-				img2, err = makePlotImage(1200, 500, event.SampleRow, intensityMatrix[event.SampleRow][:], edges)
-				if err != nil {
-					panic(err)
-				}
+			edges := FindEdgesInGeometricShadow(event)
+			img2, err = makePlotImage(event.PathDirection, 1200, 500, event, edges)
+			if err != nil {
+				panic(err)
 			}
 		}
 
@@ -449,7 +556,7 @@ func main() {
 			cameraImg.FillMode = canvas.ImageFillContain
 			cameraImg.SetMinSize(fyne.NewSize(1200, 500))
 
-			w3 := myApp.NewWindow("Camera resonse curve")
+			w3 := myApp.NewWindow("Camera response curve")
 			w3.SetContent(container.NewCenter(cameraImg))
 			w3.Resize(fyne.NewSize(950, 550))
 			w3.Show()
@@ -460,7 +567,6 @@ func main() {
 }
 
 func FresnelScale(wavelengthNm, ZAu float64) float64 {
-	// Unit	conversions.
 	auToKm := 1.495979e+8 // Convert distance expressed in AU to km
 	nmToKm := 1e-9 * 1e-3 // Convert nm to km
 	wavelengthKm := wavelengthNm * nmToKm
@@ -468,46 +574,34 @@ func FresnelScale(wavelengthNm, ZAu float64) float64 {
 	return math.Sqrt(wavelengthKm * ZKm / 2)
 }
 
-func FindEdgesInGeometricShadow(fPlane *image.Gray, row int) []float64 {
-	var ans []float64
-	bounds := fPlane.Bounds()
-	width := bounds.Dx()
-
-	var colorAtNextEdge uint8 = 0
-	for col := range width {
-		pixelValue := fPlane.GrayAt(col, row).Y
-		if pixelValue > 0 {
-			pixelValue = 1
-		}
-
-		if pixelValue == colorAtNextEdge {
-			ans = append(ans, float64(col))
-			colorAtNextEdge = 1 - colorAtNextEdge // Toggle the color we treat as an edge
-		}
-	}
-	return ans
+func placeDotAt(x, y, diameter float32, col color.Color) *canvas.Circle {
+	dot := canvas.NewCircle(col)
+	dot.Resize(fyne.NewSize(diameter, diameter))
+	dot.Move(fyne.NewPos(x-diameter/2, y-diameter/2))
+	return dot
 }
 
-// Option 1: Array of arrays [[wavelength, weight], ...]
-func parseArrayFormat(data []byte) ([][2]float64, error) {
-	var pairs [][2]float64
-	err := json.Unmarshal(data, &pairs)
-	return pairs, err
-}
-
-func addScaledComplexInPlace(a []complex128, b []complex128, scaleB float64) {
-	if len(a) != len(b) {
-		panic("vector lengths don't match")
+func computePathPoints(e *OccultationEvent) {
+	xLengthPixels := e.PathEnd[0] - e.PathStart[0]
+	yLengthPixels := e.PathEnd[1] - e.PathStart[1]
+	pathLengthPixels := math.Sqrt(xLengthPixels*xLengthPixels + yLengthPixels*yLengthPixels)
+	fmt.Printf("Path length is %0.3f pixels\n", pathLengthPixels)
+	dYPerStep := yLengthPixels / pathLengthPixels
+	dXPerStep := xLengthPixels / pathLengthPixels
+	startX := e.PathStart[0]
+	startY := e.PathStart[1]
+	xVal := 0.0
+	yVal := 0.0
+	k := 0.0
+	distanceFromStart := 0.0
+	for i := range int(math.Round(pathLengthPixels)) {
+		k = float64(i)
+		xVal = startX + k*dXPerStep
+		yVal = startY + k*dYPerStep
+		// distanceFromStart is the pixel distance from the start of the path. It evaluates to k
+		distanceFromStart = math.Sqrt(k*k*dXPerStep*dXPerStep + k*k*dYPerStep*dYPerStep)
+		e.PathSamplePoints = append(e.PathSamplePoints, [3]float64{xVal, yVal, distanceFromStart})
 	}
-
-	for i := range a {
-		a[i] = a[i] + complex(scaleB, 0)*b[i]
-	}
-}
-
-func scaleComplex(v []complex128, scale float64) {
-	s := complex(scale, 0)
-	for i := range v {
-		v[i] *= s
-	}
+	//fmt.Println(e.PathSamplePoints[0], e.PathSamplePoints[len(e.PathSamplePoints)-1])
+	//fmt.Println()
 }

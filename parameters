@@ -1,39 +1,19 @@
 {
-  // Set show_input to true if you want this file printed to
-  // the console. Useful for debugging. No much good for anything else,
-  // will probably be removed in future versions.
-
-  show_input_bool : false,
-
-  // Set window_size to 0 to suppress display of ground shadow (and possibly other plots)
+  // Set window_size to 0 to suppress display of ground shadow (and possibly other plots as well)
 
   window_size_pixels : 800,
 
-  // Set path_to_external_image. This field should be omitted if no external image is supplied.
-  // External images must be square and the width is used as fundamental_plane_width_num_points
-  // and overrides any value supplied later for that parameter. Any ellipses defined will be
-  // added on top of the external image. The expectation is that the image being supplied
-  // is a polygon shape. The file format is 8 bit grayscale png with object pixels set to 0
-  // and all background pixels set to 255 (actually, any non-zero value will work).
+  // The title of the ground shadow display image.  Optional.
+  title : "(9203) Myrtus 2025 Feb 22",
 
-  // path_to_external_image : "input.png",
-
-  // Set path_for_ground_shadow_output_folder to "" to suppress output files.
-  // If a folder path is given, title will be used as the output file name
-  // with spaces replaced by _ (underscore).
-  // We have changed our minds about this issue and are now always outputting the 8 bit and 16 bit
-  // .png files to the directory where the app is run from using fixed file names.
-  // They are: occultImage16bit.png and displayImage8bit.png
-  // NOTE: these are overwritten each time the app is run.
-
-  // path_for_ground_shadow_output_folder : "C:/Users/boban/tool_test_folder",
-
-  title : "(9203) Myrtus 2025 Feb 22",  // Used to add title to ground shadow display image (if present)
-
-  fundamental_plane_width_km : 40,
+  fundamental_plane_width_km : 40,            // Size of the FOV in Km
   fundamental_plane_width_num_points : 2000,  // Overridden if external image is supplied
 
-  camera_exposure_secs: 0.040,  // Not yet implemented and will be ignored for Occult usage.
+  // Distance to the asteroid can be specified either in au or in arcsec.
+  // If both are present, parallax_arcsec is used.
+
+  parallax_arcsec : 3.7711,
+  distance_au : 2.33,
 
   // If you want an integrated (white light) ground shadow image, supply a path to a QE table file.
   // Use the example QHY174 sensor response curve file as a template. When present,
@@ -41,23 +21,30 @@
   // parameter to control how many entries are processed). Each image will be weighted by the QE
   // value at that wavelength for summing with the other images.
 
-  path_to_qe_table_file : "qhy174QEevery5nm",
+  // path_to_qe_table_file : "qhy174QEevery20nm",  // See note below if you need to include folder paths
+
+  // If your path contains back slashes, you must escape them with another back slash. See example below ...
+  // Example: path_to_qe_table_file : "c:\\Users\\boban\\Dropbox\\GolandProjects\\OccultDiffraction\\qhy174QEevery20nm",
 
   // If no QE table is provided, the ground image will be generated for the wavelength
   // specified below. This parameter is ignored if a QE table is provided.
 
-  observation_wavelength_nm : 500,
+  observation_wavelength_nm : 500,  // This is required to be present, even if a QE table is provided.
 
   // The next 3 values determine shadow speed and fundamental plane PA (not relevant
-  // for Occult usage except maybe for comparison during development). They are used
+  // for Occult usage except for cross checking comparison during development). They are used
   // to extract a sample light curve from the diffraction shadow.
 
-  // dX_km_per_sec : 5.074,
-  // dY_km_per_sec : -0.904,
-  // path_perpendicular_offset_from_center_km : 1.875,
+  dX_km_per_sec : 5.074,
+  dY_km_per_sec : -0.904,
+  path_perpendicular_offset_from_center_km : -1.18,  // optional. Defaults to 0.0 See note below for details
 
-  star_name: "UCAC4 392-058875",
-  //star_diam_on_plane_mas: 0.15,
+  // The path_perpendicular_offset_from_center_km parameter is interpreted such that
+  // positive values shift the observation path to the right of someone facing forward on the star path.
+
+  percent_mag_drop : 75,  // optional. If omitted, 100 will be used
+
+  // star_diam_on_plane_mas: 0.15,  // optional. If omitted, 0.0 is used (i.e., no finite star calculation)
 
   // The following parameters control limb-darkening for the star.
   // Either the star class or a limb-darkening coefficient can be specified.
@@ -66,12 +53,6 @@
 
   limb_darkening_coeff: 0.7,
   star_class : "K",
-
-  // Distance to asteroid can be specified two ways.
-  // If both present, parallax_arcsec is used.
-
-  parallax_arcsec : 3.7711,
-  distance_au : 2.33,
 
   // This section can be omitted if an external image is supplied.
   // If included when an external image is supplied, the ellipse shape
@@ -94,9 +75,13 @@
       major_axis_pa_degrees : 94.0,
   },
 
-  // This section is used only for debugging/development. It identifies a row
-  // of the diffraction shadow to be plotted. This will be superseded
-  // by the use of dX_km_per_sec and dY_km_per_sec and path_perpendicular_offset_from_center_km.
-  sample_row: 1074,    // Lower notch
-  //sample_row: 966,     // Upper notch
+  // Set path_to_external_image. This field should be omitted if no external image is supplied.
+  // External images must be square and the width is used as fundamental_plane_width_num_points
+  // and overrides any value supplied later for that parameter. Any ellipses defined will be
+  // added on top of the external image. The expectation is that the image being supplied
+  // is a polygon shape. The file format is 8 bit grayscale png with object pixels set to 0
+  // and all background pixels set to 255 (actually, any non-zero value will work).
+
+  // path_to_external_image : "input.png",
+
 }

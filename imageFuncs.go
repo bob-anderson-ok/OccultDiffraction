@@ -11,16 +11,76 @@ import (
 	"sort"
 )
 
+func interpolate(matrix [][]float64, x, y float64) float64 {
+	n := len(matrix)
+	if n == 0 {
+		return 0
+	}
+
+	// Clamp to valid range (that is, at edges of matrix
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x >= float64(n-1) {
+		x = float64(n-1) - 1e-9
+	}
+	if y >= float64(n-1) {
+		y = float64(n-1) - 1e-9
+	}
+
+	// Integer indices
+	x0 := int(x)
+	y0 := int(y)
+	x1 := x0 + 1
+	y1 := y0 + 1
+
+	// Fractional parts
+	xFrac := x - float64(x0)
+	yFrac := y - float64(y0)
+
+	// Four surrounding values
+	v00 := matrix[y0][x0]
+	v01 := matrix[y0][x1]
+	v10 := matrix[y1][x0]
+	v11 := matrix[y1][x1]
+
+	// Bilinear interpolation
+	v0 := v00*(1-xFrac) + v01*xFrac
+	v1 := v10*(1-xFrac) + v11*xFrac
+
+	return v0*(1-yFrac) + v1*yFrac
+}
+
+func addScaledComplexInPlace(a []complex128, b []complex128, scaleB float64) {
+	if len(a) != len(b) {
+		panic("vector lengths don't match")
+	}
+
+	for i := range a {
+		a[i] = a[i] + complex(scaleB, 0)*b[i]
+	}
+}
+
+func scaleComplex(v []complex128, scale float64) {
+	s := complex(scale, 0)
+	for i := range v {
+		v[i] *= s
+	}
+}
+
 // -------------------- I/O --------------------
 
-func SavePNG(path string, img image.Image) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return png.Encode(f, img)
-}
+//func SavePNG(path string, img image.Image) error {
+//	f, err := os.Create(path)
+//	if err != nil {
+//		return err
+//	}
+//	defer f.Close()
+//	return png.Encode(f, img)
+//}
 
 // MatrixToGray16Data -------------------- Data PNG (Gray16, fixed physical scaling) --------------------
 // Mapping: Y16 = round(v * scale), clamped to [0, 65535]
@@ -155,8 +215,12 @@ func SaveGrayPNG(filename string, img *image.Gray) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
+	//defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	return png.Encode(f, img)
 }
 
@@ -165,7 +229,12 @@ func SaveGray16PNG(filename string, img *image.Gray16) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	//defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	return png.Encode(f, img)
 }
@@ -188,6 +257,21 @@ func ConvertSourcePlaneImageToComplex(img *image.Gray) [][]complex128 {
 				m[y][x] = complex(1.0, 0.0) // We create an aperture from the black on white image
 			} else {
 				m[y][x] = complex(0.0, 0.0)
+			}
+		}
+	}
+	return m
+}
+
+func ConvertSourcePlaneImageToMatrix(img *image.Gray) [][]float64 {
+	m := make([][]float64, img.Bounds().Dy())
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		m[y] = make([]float64, img.Bounds().Dx())
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			if img.GrayAt(x, y).Y == 0 {
+				m[y][x] = 1.0 // We create an aperture from the black on white image
+			} else {
+				m[y][x] = 0.0
 			}
 		}
 	}
@@ -233,20 +317,20 @@ func Flatten2D(m [][]complex128) ([]complex128, error) {
 	return out, nil
 }
 
-func ReshapeComplex1DTo2D(v []complex128, rows, cols int) ([][]complex128, error) {
-	if len(v) != rows*cols {
-		return nil, fmt.Errorf("size mismatch: have %d, want %d", len(v), rows*cols)
-	}
-
-	m := make([][]complex128, rows)
-	k := 0
-	for i := 0; i < rows; i++ {
-		m[i] = make([]complex128, cols)
-		copy(m[i], v[k:k+cols])
-		k += cols
-	}
-	return m, nil
-}
+//func ReshapeComplex1DTo2D(v []complex128, rows, cols int) ([][]complex128, error) {
+//	if len(v) != rows*cols {
+//		return nil, fmt.Errorf("size mismatch: have %d, want %d", len(v), rows*cols)
+//	}
+//
+//	m := make([][]complex128, rows)
+//	k := 0
+//	for i := 0; i < rows; i++ {
+//		m[i] = make([]complex128, cols)
+//		copy(m[i], v[k:k+cols])
+//		k += cols
+//	}
+//	return m, nil
+//}
 
 func Reshape1DTo2D(v []float64, rows, cols int) ([][]float64, error) {
 	if len(v) != rows*cols {
@@ -263,13 +347,13 @@ func Reshape1DTo2D(v []float64, rows, cols int) ([][]float64, error) {
 	return m, nil
 }
 
-func View1DAs2D(v []complex128, rows, cols int) ([][]complex128, error) {
-	if len(v) != rows*cols {
-		return nil, fmt.Errorf("size mismatch")
-	}
-	m := make([][]complex128, rows)
-	for i := 0; i < rows; i++ {
-		m[i] = v[i*cols : (i+1)*cols]
-	}
-	return m, nil
-}
+//func View1DAs2D(v []complex128, rows, cols int) ([][]complex128, error) {
+//	if len(v) != rows*cols {
+//		return nil, fmt.Errorf("size mismatch")
+//	}
+//	m := make([][]complex128, rows)
+//	for i := 0; i < rows; i++ {
+//		m[i] = v[i*cols : (i+1)*cols]
+//	}
+//	return m, nil
+//}

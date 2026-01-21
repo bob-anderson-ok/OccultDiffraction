@@ -1,5 +1,13 @@
 package main
 
+import json "github.com/KevinWang15/go-json5"
+
+func parseArrayFormat(data []byte) ([][2]float64, error) {
+	var pairs [][2]float64
+	err := json.Unmarshal(data, &pairs)
+	return pairs, err
+}
+
 func getLeafValue(jsonTable map[string]interface{}, path ...string) (interface{}, bool) {
 	var cur interface{} = jsonTable
 	for _, p := range path {
@@ -65,14 +73,12 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 	//}
 
 	filePath, ok := getLeafValue(jsonTable, "path_to_qe_table_file")
-	if !ok {
-		msg = "path_to_qe_table_file: not found"
-		return msg, false
-	}
-	event.PathToQEtable, ok = filePath.(string)
-	if !ok {
-		msg = "path_to_qe_table_file: is not a string"
-		return msg, false
+	if ok {
+		event.PathToQEtable, ok = filePath.(string)
+		if !ok {
+			msg = "path_to_qe_table_file: is not a string"
+			return msg, false
+		}
 	}
 
 	mainBodyRequired := true
@@ -87,14 +93,21 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 	}
 
 	title, ok := getLeafValue(jsonTable, "title")
-	if !ok {
-		msg = "title: not found"
-		return msg, false
+	if ok {
+		event.Title, ok = title.(string)
+		if !ok {
+			msg = "title: is not a string"
+			return msg, false
+		}
 	}
-	event.Title, ok = title.(string)
-	if !ok {
-		msg = "title: is not a string"
-		return msg, false
+
+	pathOffsetKm, ok := getLeafValue(jsonTable, "path_perpendicular_offset_from_center_km")
+	if ok { // We allow this field to be missing - if missing, it defaults to 0
+		event.PathOffsetFromCenterKm, ok = pathOffsetKm.(float64)
+		if !ok {
+			msg = "path_perpendicular_offset_from_center_km: is not a float64"
+			return msg, false
+		}
 	}
 
 	skyWidth, ok := getLeafValue(jsonTable, "fundamental_plane_width_km")
@@ -120,15 +133,24 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 	}
 	event.FundamentalPlaneWidthPoints = int(numberOfPoints)
 
-	expSecs, ok := getLeafValue(jsonTable, "camera_exposure_secs")
-	if !ok {
-		msg = "camera_exposure_secs: not found"
-		return msg, false
-	}
-	event.CameraExposureSecs, ok = expSecs.(float64)
-	if !ok {
-		msg = "camera_exposure_secs: is not a float64"
-		return msg, false
+	//expSecs, ok := getLeafValue(jsonTable, "camera_exposure_secs")
+	//if !ok {
+	//	msg = "camera_exposure_secs: not found"
+	//	return msg, false
+	//}
+	//event.CameraExposureSecs, ok = expSecs.(float64)
+	//if !ok {
+	//	msg = "camera_exposure_secs: is not a float64"
+	//	return msg, false
+	//}
+
+	magDropPercent, ok := getLeafValue(jsonTable, "percent_mag_drop")
+	if ok {
+		event.PercentMagDrop, ok = magDropPercent.(float64)
+		if !ok {
+			msg = "percent_mag_drop: is not a float64"
+			return msg, false
+		}
 	}
 
 	wavelength, ok := getLeafValue(jsonTable, "observation_wavelength_nm")
@@ -161,26 +183,13 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 	}
 
 	starName, ok := getLeafValue(jsonTable, "star_name")
-	if !ok {
-		msg = "star_name: not found"
-		return msg, false
+	if ok {
+		event.StarName, ok = starName.(string)
+		if !ok {
+			msg = "star_name: is not a string"
+			return msg, false
+		}
 	}
-	event.StarName, ok = starName.(string)
-	if !ok {
-		msg = "star_name: is not a string"
-		return msg, false
-	}
-
-	//starMag, ok := getLeafValue(jsonTable, "star_magnitude")
-	//if !ok {
-	//	msg = "star_magnitude: not found"
-	//	return msg, false
-	//}
-	//event.StarMagnitude, ok = starMag.(float64)
-	//if !ok {
-	//	msg = "star_magnitude: is not a float64"
-	//	return msg, false
-	//}
 
 	starDiam, ok := getLeafValue(jsonTable, "star_diam_on_plane_mas")
 	if !ok {
@@ -238,18 +247,6 @@ func validateJsonFileAndFillEvent(jsonTable map[string]interface{}, event *Occul
 			msg = "distance_au: is not a float64"
 			return msg, false
 		}
-	}
-
-	sampleRow, ok := getLeafValue(jsonTable, "sample_row")
-	if !ok { // not found
-		event.SampleRow = -1
-	} else {
-		floatSampleRow, ok := sampleRow.(float64)
-		if !ok {
-			msg = "sample_row: is not a float64"
-			return msg, false
-		}
-		event.SampleRow = int(floatSampleRow)
 	}
 
 	// Check to see if a main_body group is present. Required if no external image is supplied.

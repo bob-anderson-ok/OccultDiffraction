@@ -7,7 +7,7 @@ import (
 	"image/color"
 	"log"
 	"math"
-	"strconv"
+	//"strconv"
 
 	"gonum.org/v1/plot"
 
@@ -20,12 +20,16 @@ import (
 	"gonum.org/v1/plot/vg/vgimg"
 )
 
-func makePlotImage(wPx, hPx, row int, curve, edges []float64) (image.Image, error) {
+func makePlotImage(direction string, wPx, hPx float64, e OccultationEvent, edges []float64) (image.Image, error) {
 
 	p := plot.New()
 
 	p.Y.Min = -0.2
 	p.Y.Max = 1.5
+
+	X := 0
+	Y := 1
+	D := 2
 
 	// Modify the font fields directly on existing styles
 	p.Title.TextStyle.Font.Typeface = "Liberation"
@@ -48,38 +52,65 @@ func makePlotImage(wPx, hPx, row int, curve, edges []float64) (image.Image, erro
 	p.Y.Tick.Label.Font.Variant = "Sans"
 	p.Y.Tick.Label.Font.Size = vg.Points(10)
 
-	p.Title.Text = "Light curve at row " + strconv.Itoa(row)
-	p.X.Label.Text = "column (pixel units)"
+	timePerPixel := e.FundamentalPlaneWidthKm / e.ShadowSpeedKmPerSec / float64(e.FundamentalPlaneWidthPoints)
+	pointSpan := e.PathSamplePoints[len(e.PathSamplePoints)-1][D]
+	distancePerPoint := e.FundamentalPlaneWidthKm / float64(e.FundamentalPlaneWidthPoints)
+	timeSpan := timePerPixel * pointSpan
+	fmt.Printf("Time span is %0.3f seconds\n", timeSpan)
+
+	p.Title.Text = "Light curve along observation path"
+	p.X.Label.Text = fmt.Sprintf("km (divide by the shadow speed of %0.3f km/second to get time)", e.ShadowSpeedKmPerSec)
 	p.Y.Label.Text = "normalized intensity"
-	p.X.Tick.Marker = StepTicks{Step: float64(len(curve) / 20), Format: "%.0f"}
-	//p.X.Tick.Marker = NoLabelTicks{Ticker: plot.DefaultTicks{}}
+	p.X.Tick.Marker = StepTicks{Step: pointSpan * distancePerPoint / 20, Format: "%.2f"}
 
 	p.Y.Tick.Marker = StepTicks{Step: 0.2, Format: "%.2f"}
 	p.Add(plotter.NewGrid()) // grid + ticks
 
+	//var reverse float64
+	//var offset float64
+	//
+	//reverse = 1.0
+	//offset = 0.0
+	//
+	//if direction == "right to left" {
+	//	reverse = -1.0
+	//	offset = e.PathSamplePoints[0][X] * timePerPixel
+	//}
+	//
+	//if direction == "bottom to top" {
+	//	reverse = -1.0
+	//	offset = e.PathSamplePoints[0][Y] * timePerPixel
+	//}
+
 	// Data
-	n := len(curve)
+	n := len(e.PathSamplePoints)
 	pts := make(plotter.XYs, n)
 	for i := 0; i < n; i++ {
-		x := float64(i)
-		y := curve[i]
-		pts[i].X = x
-		pts[i].Y = y
+		x := e.PathSamplePoints[i][X]
+		y := e.PathSamplePoints[i][Y]
+		intensity := interpolate(e.IntensityMatrix, x, y)
+		//if direction == "top to bottom" || direction == "bottom to top" {
+		//	pts[i].X = y*timePerPixel*reverse + offset // TODO Remove this test hack
+		//} else {
+		//	pts[i].X = x*timePerPixel*reverse + offset // TODO Remove this test hack
+		//}
+		pts[i].X = e.PathSamplePoints[i][D] * distancePerPoint
+		pts[i].Y = intensity
 	}
 
 	line, err := plotter.NewLine(pts)
-	line.Color = color.RGBA{R: 0, G: 0, B: 255, A: 255} // blue
-
 	if err != nil {
 		return nil, err
 	}
+	line.Color = color.RGBA{R: 0, G: 0, B: 255, A: 255} // blue
+
 	p.Add(line)
 
 	if len(edges) > 0 {
 		for _, edge := range edges {
 			vpts := plotter.XYs{
-				{X: edge, Y: -0.1},
-				{X: edge, Y: 1.3},
+				{X: edge * distancePerPoint, Y: -0.1},
+				{X: edge * distancePerPoint, Y: 1.3},
 			}
 
 			vline, err := plotter.NewLine(vpts)
@@ -100,7 +131,7 @@ func makePlotImage(wPx, hPx, row int, curve, edges []float64) (image.Image, erro
 
 	hpts := plotter.XYs{
 		{X: 0.0, Y: 0.0},
-		{X: float64(n), Y: 0.0},
+		{X: pointSpan * distancePerPoint, Y: 0.0},
 	}
 
 	hline, err := plotter.NewLine(hpts)
@@ -108,6 +139,7 @@ func makePlotImage(wPx, hPx, row int, curve, edges []float64) (image.Image, erro
 		panic(err)
 	}
 
+	// TODO Fix this
 	p.Add(hline)
 
 	hline.Dashes = []vg.Length{
@@ -119,8 +151,8 @@ func makePlotImage(wPx, hPx, row int, curve, edges []float64) (image.Image, erro
 	// Render into an in-memory image
 	// Choose a "virtual" size in vg units and map to pixels via DPI.
 	const dpi = 96
-	width := vg.Length(float64(wPx)) * vg.Inch / dpi
-	height := vg.Length(float64(hPx)) * vg.Inch / dpi
+	width := vg.Length(wPx) * vg.Inch / dpi
+	height := vg.Length(hPx) * vg.Inch / dpi
 
 	c := vgimg.New(width, height)
 	dc := draw.New(c)
