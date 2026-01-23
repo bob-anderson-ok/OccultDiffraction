@@ -89,11 +89,6 @@ func makePlotImage(direction string, wPx, hPx float64, e OccultationEvent, edges
 		x := e.PathSamplePoints[i][X]
 		y := e.PathSamplePoints[i][Y]
 		intensity := interpolate(e.IntensityMatrix, x, y)
-		//if direction == "top to bottom" || direction == "bottom to top" {
-		//	pts[i].X = y*timePerPixel*reverse + offset // TODO Remove this test hack
-		//} else {
-		//	pts[i].X = x*timePerPixel*reverse + offset // TODO Remove this test hack
-		//}
 		pts[i].X = e.PathSamplePoints[i][D] * distancePerPoint
 		pts[i].Y = intensity
 	}
@@ -139,7 +134,6 @@ func makePlotImage(direction string, wPx, hPx float64, e OccultationEvent, edges
 		panic(err)
 	}
 
-	// TODO Fix this
 	p.Add(hline)
 
 	hline.Dashes = []vg.Length{
